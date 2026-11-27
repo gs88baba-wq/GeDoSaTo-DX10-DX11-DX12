@@ -1,97 +1,24 @@
-#include <windows.h>
-#include <tlhelp32.h>
-#include <cstdio>
-#include <string>
-#include <vector>
-#include <fstream>
-#include <set>
-
-DWORD FindProcessId(const std::string& exeName) {
-    DWORD pid = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32 pe;
-        pe.dwSize = sizeof(pe);
-        if (Process32First(snap, &pe)) {
-            do {
-                if (_stricmp(pe.szExeFile, exeName.c_str()) == 0) {
-                    pid = pe.th32ProcessID;
-                    break;
-                }
-            } while (Process32Next(snap, &pe));
-        }
-        CloseHandle(snap);
-    }
-    return pid;
-}
-
-bool InjectDLL(DWORD pid, const std::string& dllPath) {
-    HANDLE hProc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
-    if (!hProc) return false;
-    void* remoteMem = VirtualAllocEx(hProc, nullptr, dllPath.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem) { CloseHandle(hProc); return false; }
-    WriteProcessMemory(hProc, remoteMem, dllPath.c_str(), dllPath.size() + 1, nullptr);
-    LPTHREAD_START_ROUTINE loadLib = (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
-    HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0, loadLib, remoteMem, 0, nullptr);
-    if (hThread) {
-        WaitForSingleObject(hThread, 5000);
-        CloseHandle(hThread);
-    }
-    VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-    CloseHandle(hProc);
-    return hThread != nullptr;
-}
-
-int main() {
-    SetConsoleTitleA("GeDoSaTo 0.22.2320 (DX10-11-12) Injector");
-    char selfPath[MAX_PATH];
-    GetModuleFileNameA(nullptr, selfPath, MAX_PATH);
-    std::string dir(selfPath);
-    size_t pos = dir.find_last_of("\\/");
-    if (pos != std::string::npos) dir = dir.substr(0, pos + 1);
-
-    std::string dllPath = dir + "dxgi.dll";
-    std::string listPath = dir + "whitelist.txt";
-
-    if (GetFileAttributesA(listPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::ofstream wf(listPath.c_str());
-        wf << "# List game executables to inject (one per line)\n";
-        wf << "RDR2.exe\n";
-        wf << "GTA5.exe\n";
-        wf << "witcher3.exe\n";
-        wf.close();
-    }
-
-    printf("==================================================\n");
-    printf(" GeDoSaTo 0.22.2320 (DX10 / DX11 / DX12) Injector\n");
-    printf("==================================================\n");
-    printf("[*] DLL Path: %s\n", dllPath.c_str());
-    printf("[*] Whitelist: %s\n", listPath.c_str());
-    printf("[*] Waiting for target game... (Close window to exit)\n\n");
-
-    std::set<DWORD> injectedPids;
-    while (true) {
-        std::ifstream file(listPath.c_str());
-        std::string line;
-        while (std::getline(file, line)) {
-            size_t first = line.find_first_not_of(" \t\r\n");
-            if (first == std::string::npos || line.at(first) == '#') continue;
-            size_t last = line.find_last_not_of(" \t\r\n");
-            std::string exe = line.substr(first, last - first + 1);
-
-            DWORD pid = FindProcessId(exe);
-            if (pid != 0 && injectedPids.find(pid) == injectedPids.end()) {
-                printf("[+] Found %s (PID: %lu). Waiting 4 seconds...\n", exe.c_str(), pid);
-                Sleep(4000);
-                if (InjectDLL(pid, dllPath)) {
-                    printf("[OK] Successfully injected into %s!\n", exe.c_str());
-                } else {
-                    printf("[ERROR] Failed to inject into %s (Run as Administrator).\n", exe.c_str());
-                }
-                injectedPids.insert(pid);
-            }
-        }
-        Sleep(1500);
-    }
-    return 0;
-}
+name: Build GeDoSaTo DX10-11-12
+on: [push]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile DLL and Launcher
+        run: |
+          New-Item -ItemType Directory -Force -Path src | Out-Null
+          Set-Content -Path src/dxgi.def -Encoding ASCII -Value "LIBRARY dxgi`r`nEXPORTS`r`nCreateDXGIFactory=CreateDXGIFactory`r`nCreateDXGIFactory1=CreateDXGIFactory1`r`nCreateDXGIFactory2=CreateDXGIFactory2`r`nDXGIDeclareAdapterRemovalSupport=C:\Windows\System32\dxgi.DXGIDeclareAdapterRemovalSupport`r`nDXGIGetDebugInterface1=C:\Windows\System32\dxgi.DXGIGetDebugInterface1`r`nDXGID3D10CreateDevice=C:\Windows\System32\dxgi.DXGID3D10CreateDevice`r`nDXGID3D10CreateLayeredDevice=C:\Windows\System32\dxgi.DXGID3D10CreateLayeredDevice`r`nDXGID3D10GetLayeredDeviceSize=C:\Windows\System32\dxgi.DXGID3D10GetLayeredDeviceSize`r`nDXGID3D10RegisterLayers=C:\Windows\System32\dxgi.DXGID3D10RegisterLayers`r`nDXGIDumpJournal=C:\Windows\System32\dxgi.DXGIDumpJournal`r`nDXGIReportAdapterConfiguration=C:\Windows\System32\dxgi.DXGIReportAdapterConfiguration`r`nPIXBeginCapture=C:\Windows\System32\dxgi.PIXBeginCapture`r`nPIXEndCapture=C:\Windows\System32\dxgi.PIXEndCapture`r`nPIXGetCaptureState=C:\Windows\System32\dxgi.PIXGetCaptureState"
+          cl /LD /O2 /EHsc src/dxgi_proxy.cpp /link /DEF:src/dxgi.def user32.lib d3d11.lib d3d12.lib dxgi.lib /OUT:dxgi.dll
+          cl /O2 /EHsc src/launcher.cpp /link user32.lib /OUT:GeDoSaToLauncher.exe
+      - name: Upload Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeDoSaTo-DX10-11-12-Full
+          path: |
+            dxgi.dll
+            GeDoSaToLauncher.exe
