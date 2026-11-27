@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 #define GEDOSATO_VERSION "0.22.2320-DX10-11-12"
 
@@ -26,7 +27,7 @@ static int g_RenderHeight = 2160;
 static int g_PresentWidth = 1920;
 static int g_PresentHeight = 1080;
 static int g_PresentHz = 60;
-static char g_ScalingType[32] = "lanczos";
+static std::string g_ScalingType = "lanczos";
 static bool g_EnableDownsampling = true;
 static bool g_EnablePostprocessing = true;
 static float g_SharpenStrength = 0.65f;
@@ -38,40 +39,47 @@ static LARGE_INTEGER g_PerfFreq;
 static LARGE_INTEGER g_LastFrameTime;
 
 void LoadConfig() {
-    char iniPath[MAX_PATH];
-    GetCurrentDirectoryA(MAX_PATH, iniPath);
-    strcat_s(iniPath, "\\GeDoSaTo.ini");
+    std::string iniPath(MAX_PATH, '\0');
+    DWORD len = GetCurrentDirectoryA(MAX_PATH, &iniPath.at(0));
+    iniPath.resize(len);
+    iniPath += "\\GeDoSaTo.ini";
 
-    if (GetFileAttributesA(iniPath) == INVALID_FILE_ATTRIBUTES) {
-        WritePrivateProfileStringA("General", "Version", GEDOSATO_VERSION, iniPath);
-        WritePrivateProfileStringA("Resolution", "EnableDownsampling", "1", iniPath);
-        WritePrivateProfileStringA("Resolution", "RenderWidth", "3840", iniPath);
-        WritePrivateProfileStringA("Resolution", "RenderHeight", "2160", iniPath);
-        WritePrivateProfileStringA("Resolution", "PresentWidth", "1920", iniPath);
-        WritePrivateProfileStringA("Resolution", "PresentHeight", "1080", iniPath);
-        WritePrivateProfileStringA("Resolution", "PresentHz", "60", iniPath);
-        WritePrivateProfileStringA("Scaling", "ScalingType", "lanczos", iniPath);
-        WritePrivateProfileStringA("PostProcessing", "EnablePostprocessing", "1", iniPath);
-        WritePrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", iniPath);
-        WritePrivateProfileStringA("Framerate", "FPSLimit", "0", iniPath);
-        WritePrivateProfileStringA("Textures", "EnableTextureOverride", "1", iniPath);
-        WritePrivateProfileStringA("Textures", "DumpTextures", "0", iniPath);
+    if (GetFileAttributesA(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        WritePrivateProfileStringA("General", "Version", GEDOSATO_VERSION, iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "EnableDownsampling", "1", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "RenderWidth", "3840", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "RenderHeight", "2160", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "PresentWidth", "1920", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "PresentHeight", "1080", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "PresentHz", "60", iniPath.c_str());
+        WritePrivateProfileStringA("Scaling", "ScalingType", "lanczos", iniPath.c_str());
+        WritePrivateProfileStringA("PostProcessing", "EnablePostprocessing", "1", iniPath.c_str());
+        WritePrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", iniPath.c_str());
+        WritePrivateProfileStringA("Framerate", "FPSLimit", "0", iniPath.c_str());
+        WritePrivateProfileStringA("Textures", "EnableTextureOverride", "1", iniPath.c_str());
+        WritePrivateProfileStringA("Textures", "DumpTextures", "0", iniPath.c_str());
     }
 
-    g_EnableDownsampling = GetPrivateProfileIntA("Resolution", "EnableDownsampling", 1, iniPath) != 0;
-    g_RenderWidth = GetPrivateProfileIntA("Resolution", "RenderWidth", 3840, iniPath);
-    g_RenderHeight = GetPrivateProfileIntA("Resolution", "RenderHeight", 2160, iniPath);
-    g_PresentWidth = GetPrivateProfileIntA("Resolution", "PresentWidth", 1920, iniPath);
-    g_PresentHeight = GetPrivateProfileIntA("Resolution", "PresentHeight", 1080, iniPath);
-    g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 60, iniPath);
-    GetPrivateProfileStringA("Scaling", "ScalingType", "lanczos", g_ScalingType, sizeof(g_ScalingType), iniPath);
-    g_EnablePostprocessing = GetPrivateProfileIntA("PostProcessing", "EnablePostprocessing", 1, iniPath) != 0;
-    char sharpBuf[32];
-    GetPrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", sharpBuf, sizeof(sharpBuf), iniPath);
-    g_SharpenStrength = (float)atof(sharpBuf);
-    g_FPSLimit = GetPrivateProfileIntA("Framerate", "FPSLimit", 0, iniPath);
-    g_EnableTextureOverride = GetPrivateProfileIntA("Textures", "EnableTextureOverride", 1, iniPath) != 0;
-    g_DumpTextures = GetPrivateProfileIntA("Textures", "DumpTextures", 0, iniPath) != 0;
+    g_EnableDownsampling = GetPrivateProfileIntA("Resolution", "EnableDownsampling", 1, iniPath.c_str()) != 0;
+    g_RenderWidth = GetPrivateProfileIntA("Resolution", "RenderWidth", 3840, iniPath.c_str());
+    g_RenderHeight = GetPrivateProfileIntA("Resolution", "RenderHeight", 2160, iniPath.c_str());
+    g_PresentWidth = GetPrivateProfileIntA("Resolution", "PresentWidth", 1920, iniPath.c_str());
+    g_PresentHeight = GetPrivateProfileIntA("Resolution", "PresentHeight", 1080, iniPath.c_str());
+    g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 60, iniPath.c_str());
+
+    std::string scaleBuf(64, '\0');
+    DWORD sLen = GetPrivateProfileStringA("Scaling", "ScalingType", "lanczos", &scaleBuf.at(0), 64, iniPath.c_str());
+    scaleBuf.resize(sLen);
+    g_ScalingType = scaleBuf;
+
+    g_EnablePostprocessing = GetPrivateProfileIntA("PostProcessing", "EnablePostprocessing", 1, iniPath.c_str()) != 0;
+    std::string sharpBuf(32, '\0');
+    GetPrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", &sharpBuf.at(0), 32, iniPath.c_str());
+    g_SharpenStrength = (float)atof(sharpBuf.c_str());
+
+    g_FPSLimit = GetPrivateProfileIntA("Framerate", "FPSLimit", 0, iniPath.c_str());
+    g_EnableTextureOverride = GetPrivateProfileIntA("Textures", "EnableTextureOverride", 1, iniPath.c_str()) != 0;
+    g_DumpTextures = GetPrivateProfileIntA("Textures", "DumpTextures", 0, iniPath.c_str()) != 0;
 
     CreateDirectoryA("gedosato_textures", nullptr);
     CreateDirectoryA("gedosato_textures\\override", nullptr);
@@ -80,10 +88,11 @@ void LoadConfig() {
 
 bool LoadRealDXGI() {
     if (g_RealDXGI) return true;
-    char sysDir[MAX_PATH];
-    GetSystemDirectoryA(sysDir, MAX_PATH);
-    strcat_s(sysDir, "\\dxgi.dll");
-    g_RealDXGI = LoadLibraryA(sysDir);
+    std::string sysDir(MAX_PATH, '\0');
+    DWORD len = GetSystemDirectoryA(&sysDir.at(0), MAX_PATH);
+    sysDir.resize(len);
+    sysDir += "\\dxgi.dll";
+    g_RealDXGI = LoadLibraryA(sysDir.c_str());
     if (!g_RealDXGI) return false;
 
     o_CreateDXGIFactory = (PFN_CreateDXGIFactory)GetProcAddress(g_RealDXGI, "CreateDXGIFactory");
@@ -129,12 +138,12 @@ void HandleHotkeys() {
 
 void HookVTable(void* pInterface, int index, void* hookFunc, void** origFunc) {
     void** vtable = *(void***)pInterface;
-    if (vtable[index] == hookFunc) return;
+    if (*(vtable + index) == hookFunc) return;
     DWORD oldProtect;
-    VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
-    if (!*origFunc) *origFunc = vtable[index];
-    vtable[index] = hookFunc;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProtect, &oldProtect);
+    VirtualProtect(vtable + index, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
+    if (!*origFunc) *origFunc = *(vtable + index);
+    *(vtable + index) = hookFunc;
+    VirtualProtect(vtable + index, sizeof(void*), oldProtect, &oldProtect);
 }
 
 HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* This, UINT SyncInterval, UINT Flags) {
@@ -164,11 +173,11 @@ HRESULT STDMETHODCALLTYPE Hook_GetDisplayModeList(IDXGIOutput* This, DXGI_FORMAT
             *pNumModes += 1;
         } else if (*pNumModes > 0) {
             UINT idx = *pNumModes - 1;
-            pDesc[idx] = pDesc[0];
-            pDesc[idx].Width = g_RenderWidth;
-            pDesc[idx].Height = g_RenderHeight;
-            pDesc[idx].RefreshRate.Numerator = g_PresentHz;
-            pDesc[idx].RefreshRate.Denominator = 1;
+            *(pDesc + idx) = *pDesc;
+            (pDesc + idx)->Width = g_RenderWidth;
+            (pDesc + idx)->Height = g_RenderHeight;
+            (pDesc + idx)->RefreshRate.Numerator = g_PresentHz;
+            (pDesc + idx)->RefreshRate.Denominator = 1;
         }
     }
     return hr;
@@ -188,15 +197,3 @@ HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory2* This, IUnkn
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (g_EnableDownsampling && pDesc) {
         modifiedDesc = *pDesc;
-        modifiedDesc.Width = g_RenderWidth;
-        modifiedDesc.Height = g_RenderHeight;
-        pDesc = &modifiedDesc;
-    }
-    HRESULT hr = o_CreateSwapChainForHwnd(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
-    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) HookSwapChain(*ppSwapChain);
-    return hr;
-}
-
-void InstallDXGIHooks(void* ppFactory) {
-    if (!ppFactory) return;
-    IDXGIFactory2* factory2 = nullptr;
