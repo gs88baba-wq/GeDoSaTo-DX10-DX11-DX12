@@ -1,7 +1,6 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 #include <d3d11.h>
-#include <d3d12.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -11,6 +10,12 @@
 
 struct ResMode { int w; int h; int hz; };
 static std::vector<ResMode> g_Res;
+static int g_PresentW = 1920, g_PresentH = 1080, g_PresentHz = 165;
+static int g_OverrideW = 0, g_OverrideH = 0;
+static bool g_ForceAlwaysDS = false;
+static float g_FPSLimit = 0.0f;
+static std::string g_ScalingType = "bicubic";
+
 static HMODULE g_RealDXGI = nullptr;
 typedef HRESULT(WINAPI* PFN_F0)(REFIID, void**);
 typedef HRESULT(WINAPI* PFN_F1)(REFIID, void**);
@@ -19,44 +24,120 @@ static PFN_F0 o_F0 = nullptr;
 static PFN_F1 o_F1 = nullptr;
 static PFN_F2 o_F2 = nullptr;
 
+typedef BOOL(WINAPI* PFN_EDW)(LPCWSTR, DWORD, DEVMODEW*);
+typedef BOOL(WINAPI* PFN_EDA)(LPCSTR, DWORD, DEVMODEA*);
+static PFN_EDW o_EDW = nullptr;
+static PFN_EDA o_EDA = nullptr;
+static DWORD g_BaseW = 0, g_BaseA = 0;
+
+void WriteDefaultIni(const std::string& ini) {
+    std::ofstream f(ini.c_str());
+    if (!f.is_open()) return;
+    f << "# GeDoSaTo 0.22.2320-DX10-11-12 Configuration\n\n";
+    f << "renderResolution 3200x1800@165\n";
+    f << "renderResolution 3840x2160@165\n";
+    f << "renderResolution 4480x2520@165\n";
+    f << "renderResolution 5120x2880@165\n";
+    f << "renderResolution 5760x3240@165\n";
+    f << "renderResolution 7680x4320@165\n\n";
+    f << "presentWidth 1920\npresentHeight 1080\npresentHz 165\npresentInterval 0\n\n";
+    f << "scalingType bicubic\nmaintainAspectRatio true\n\n";
+    f << "fpsLimit 0\nforceAlwaysDownsamplingRes false\n";
+    f << "overrideWidth 0\noverrideHeight 0\n";
+    f << "enablePostprocessing false\nenableTextureDumping false\nenableTextureOverride false\n";
+    f.close();
+}
+
 void LoadIni() {
     g_Res.clear();
-    char p[MAX_PATH];
-    GetModuleFileNameA(nullptr, p, MAX_PATH);
-    std::string dir(p);
-    size_t pos = dir.find_last_of("\\/");
+    char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH);
+    std::string dir(p); size_t pos = dir.find_last_of("\\/");
     if (pos != std::string::npos) dir = dir.substr(0, pos + 1);
     std::string ini = dir + "GeDoSaTo.ini";
 
-    if (GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::ofstream f(ini.c_str());
-        if (f.is_open()) {
-            f << "# GeDoSaTo 0.22.2320-DX10-11-12\n";
-            f << "renderResolution 3200x1800@165\n";
-            f << "renderResolution 3840x2160@165\n";
-            f << "renderResolution 4480x2520@165\n";
-            f << "renderResolution 5120x2880@165\n";
-            f << "renderResolution 5760x3240@165\n";
-            f << "renderResolution 7680x4320@165\n";
-            f << "presentWidth 1920\npresentHeight 1080\npresentHz 165\n";
-            f << "scalingType bicubic\nfpsLimit 0\n";
-            f.close();
-        }
-    }
-    std::ifstream file(ini.c_str());
-    std::string line;
+    if (GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES) WriteDefaultIni(ini);
+
+    std::ifstream file(ini.c_str()); std::string line;
     while (std::getline(file, line)) {
         size_t first = line.find_first_not_of(" \t\r\n");
         if (first == std::string::npos || line.at(first) == '#') continue;
-        std::istringstream iss(line.substr(first));
-        std::string k, v;
-        if (iss >> k >> v && k == "renderResolution") {
+        std::istringstream iss(line.substr(first)); std::string k, v;
+        if (!(iss >> k >> v)) continue;
+        if (k == "renderResolution") {
             int w = 0, h = 0, hz = 165;
-            if (sscanf_s(v.c_str(), "%dx%d@%d", &w, &h, &hz) >= 2 && w > 0 && h > 0)
-                g_Res.push_back({ w, h, hz });
-        }
+            if (sscanf_s(v.c_str(), "%dx%d@%d", &w, &h, &hz) >= 2 && w > 0 && h > 0) g_Res.push_back({ w, h, hz });
+        } else if (k == "presentWidth") g_PresentW = atoi(v.c_str());
+        else if (k == "presentHeight") g_PresentH = atoi(v.c_str());
+        else if (k == "presentHz") g_PresentHz = atoi(v.c_str());
+        else if (k == "scalingType") g_ScalingType = v;
+        else if (k == "fpsLimit") g_FPSLimit = (float)atof(v.c_str());
+        else if (k == "forceAlwaysDownsamplingRes") g_ForceAlwaysDS = (v == "true" || v == "1");
+        else if (k == "overrideWidth") g_OverrideW = atoi(v.c_str());
+        else if (k == "overrideHeight") g_OverrideH = atoi(v.c_str());
     }
     if (g_Res.empty()) g_Res.push_back({ 3840, 2160, 165 });
+}
+
+BOOL WINAPI H_EDW(LPCWSTR d, DWORD m, DEVMODEW* dm) {
+    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDW(d, m, dm);
+    if (o_EDW(d, m, dm)) {
+        if (m >= g_BaseW) g_BaseW = m + 1;
+        if (g_OverrideW > 0 && g_OverrideH > 0 && dm && (int)dm->dmPelsWidth == g_OverrideW && (int)dm->dmPelsHeight == g_OverrideH) {
+            dm->dmPelsWidth = g_Res.at(0).w; dm->dmPelsHeight = g_Res.at(0).h;
+        }
+        return TRUE;
+    }
+    if (m >= g_BaseW && (m - g_BaseW) < g_Res.size() && dm) {
+        o_EDW(d, ENUM_CURRENT_SETTINGS, dm);
+        size_t i = m - g_BaseW;
+        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
+        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+BOOL WINAPI H_EDA(LPCSTR d, DWORD m, DEVMODEA* dm) {
+    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDA(d, m, dm);
+    if (o_EDA(d, m, dm)) {
+        if (m >= g_BaseA) g_BaseA = m + 1;
+        if (g_OverrideW > 0 && g_OverrideH > 0 && dm && (int)dm->dmPelsWidth == g_OverrideW && (int)dm->dmPelsHeight == g_OverrideH) {
+            dm->dmPelsWidth = g_Res.at(0).w; dm->dmPelsHeight = g_Res.at(0).h;
+        }
+        return TRUE;
+    }
+    if (m >= g_BaseA && (m - g_BaseA) < g_Res.size() && dm) {
+        o_EDA(d, ENUM_CURRENT_SETTINGS, dm);
+        size_t i = m - g_BaseA;
+        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
+        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+DWORD WINAPI DelayedSafeHook(LPVOID) {
+    Sleep(4000);
+    HMODULE h = GetModuleHandleA(nullptr);
+    if (!h) return 0;
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)h + ((PIMAGE_DOS_HEADER)h)->e_lfanew);
+    DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!rva) return 0;
+    for (PIMAGE_IMPORT_DESCRIPTOR imp = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)h + rva); imp->Name; imp++) {
+        if (_stricmp((const char*)((BYTE*)h + imp->Name), "user32.dll") == 0) {
+            for (PIMAGE_THUNK_DATA t = (PIMAGE_THUNK_DATA)((BYTE*)h + imp->FirstThunk); t->u1.Function; t++) {
+                void** fp = (void**)&t->u1.Function;
+                DWORD old;
+                if (*fp == (void*)o_EDW || *fp == (void*)o_EDA) {
+                    if (VirtualProtect(fp, sizeof(void*), PAGE_READWRITE, &old)) {
+                        *fp = (*fp == (void*)o_EDW) ? (void*)H_EDW : (void*)H_EDA;
+                        VirtualProtect(fp, sizeof(void*), old, &old);
+                    }
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 bool InitDXGI() {
@@ -84,10 +165,8 @@ HRESULT STDMETHODCALLTYPE H_GDML(IDXGIOutput* T, DXGI_FORMAT F, UINT Fl, UINT* N
             UINT b = *N - ex;
             for (UINT i = 0; i < ex; ++i) {
                 *(D + b + i) = *D;
-                (D + b + i)->Width = g_Res.at(i).w;
-                (D + b + i)->Height = g_Res.at(i).h;
-                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz;
-                (D + b + i)->RefreshRate.Denominator = 1;
+                (D + b + i)->Width = g_Res.at(i).w; (D + b + i)->Height = g_Res.at(i).h;
+                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz; (D + b + i)->RefreshRate.Denominator = 1;
             }
         }
     }
@@ -103,10 +182,8 @@ HRESULT STDMETHODCALLTYPE H_GDML1(IDXGIOutput1* T, DXGI_FORMAT F, UINT Fl, UINT*
             UINT b = *N - ex;
             for (UINT i = 0; i < ex; ++i) {
                 *(D + b + i) = *D;
-                (D + b + i)->Width = g_Res.at(i).w;
-                (D + b + i)->Height = g_Res.at(i).h;
-                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz;
-                (D + b + i)->RefreshRate.Denominator = 1;
+                (D + b + i)->Width = g_Res.at(i).w; (D + b + i)->Height = g_Res.at(i).h;
+                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz; (D + b + i)->RefreshRate.Denominator = 1;
             }
         }
     }
@@ -153,20 +230,4 @@ void HookAllOutputs(void* ppF) {
 extern "C" HRESULT WINAPI CreateDXGIFactory(REFIID r, void** p) {
     if (!InitDXGI() || !o_F0) return E_FAIL;
     HRESULT hr = o_F0(r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
-}
-extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID r, void** p) {
-    if (!InitDXGI() || !o_F1) return E_FAIL;
-    HRESULT hr = o_F1(r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
-}
-extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT fl, REFIID r, void** p) {
-    if (!InitDXGI() || !o_F2) return E_FAIL;
-    HRESULT hr = o_F2(fl, r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
-}
-
-BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID lp) {
-    if (r == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(h);
-        LoadIni(); InitDXGI();
-    }
-    return TRUE;
 }
