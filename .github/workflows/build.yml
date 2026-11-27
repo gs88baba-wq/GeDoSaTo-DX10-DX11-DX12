@@ -1,0 +1,19 @@
+name: Build GeDoSaTo DX10-11-12 DLL
+on: [push]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile dxgi.dll
+        run: |
+          cl /LD /O2 /EHsc src/dxgi_proxy.cpp user32.lib d3d11.lib d3d12.lib dxgi.lib /Fe:dxgi.dll
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeDoSaTo-DX10-11-12-DLL
+          path: dxgi.dll
