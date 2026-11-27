@@ -1,54 +1,3 @@
-#include <windows.h>
-#include <dxgi1_6.h>
-#include <d3d11.h>
-#include <d3d12.h>
-#include <cstdio>
-#include <string>
-
-#define GEDOSATO_VERSION "0.22.2320-DX10-11-12"
-
-typedef HRESULT(WINAPI* PFN_CreateDXGIFactory)(REFIID, void**);
-typedef HRESULT(WINAPI* PFN_CreateDXGIFactory1)(REFIID, void**);
-typedef HRESULT(WINAPI* PFN_CreateDXGIFactory2)(UINT, REFIID, void**);
-
-static HMODULE g_RealDXGI = nullptr;
-static PFN_CreateDXGIFactory o_CreateDXGIFactory = nullptr;
-static PFN_CreateDXGIFactory1 o_CreateDXGIFactory1 = nullptr;
-static PFN_CreateDXGIFactory2 o_CreateDXGIFactory2 = nullptr;
-
-static int g_RenderWidth = 3840;
-static int g_RenderHeight = 2160;
-static int g_PresentHz = 165;
-static bool g_EnableDownsampling = true;
-
-void LoadConfig() {
-    char modulePath[MAX_PATH];
-    GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-    std::string dir(modulePath);
-    size_t pos = dir.find_last_of("\\/");
-    if (pos != std::string::npos) dir = dir.substr(0, pos + 1);
-    std::string iniPath = dir + "GeDoSaTo.ini";
-
-    if (GetFileAttributesA(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        WritePrivateProfileStringA("General", "Version", GEDOSATO_VERSION, iniPath.c_str());
-        WritePrivateProfileStringA("Resolution", "EnableDownsampling", "1", iniPath.c_str());
-        WritePrivateProfileStringA("Resolution", "RenderWidth", "3840", iniPath.c_str());
-        WritePrivateProfileStringA("Resolution", "RenderHeight", "2160", iniPath.c_str());
-        WritePrivateProfileStringA("Resolution", "PresentHz", "165", iniPath.c_str());
-        WritePrivateProfileStringA("Scaling", "ScalingType", "bicubic", iniPath.c_str());
-        WritePrivateProfileStringA("PostProcessing", "EnablePostprocessing", "0", iniPath.c_str());
-        WritePrivateProfileStringA("PostProcessing", "SharpenStrength", "0.0", iniPath.c_str());
-        WritePrivateProfileStringA("Framerate", "FPSLimit", "0", iniPath.c_str());
-        WritePrivateProfileStringA("Textures", "EnableTextureOverride", "0", iniPath.c_str());
-        WritePrivateProfileStringA("Textures", "DumpTextures", "0", iniPath.c_str());
-    }
-
-    g_EnableDownsampling = GetPrivateProfileIntA("Resolution", "EnableDownsampling", 1, iniPath.c_str()) != 0;
-    g_RenderWidth = GetPrivateProfileIntA("Resolution", "RenderWidth", 3840, iniPath.c_str());
-    g_RenderHeight = GetPrivateProfileIntA("Resolution", "RenderHeight", 2160, iniPath.c_str());
-    g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 165, iniPath.c_str());
-}
-
 bool LoadRealDXGI() {
     if (g_RealDXGI) return true;
     char sysDir[MAX_PATH];
@@ -64,20 +13,46 @@ bool LoadRealDXGI() {
 }
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_GetDisplayModeList)(IDXGIOutput*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC*);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_Present)(IDXGISwapChain*, UINT, UINT);
 static PFN_GetDisplayModeList o_GetDisplayModeList = nullptr;
+static PFN_Present o_Present = nullptr;
+
+void EnforceFPSLimit() {
+    if (g_FPSLimit <= 0.0f) return;
+    double targetSec = 1.0 / (double)g_FPSLimit;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double elapsed = (double)(now.QuadPart - g_LastFrameTime.QuadPart) / (double)g_PerfFreq.QuadPart;
+    while (elapsed < targetSec) {
+        if (targetSec - elapsed > 0.002) Sleep(1);
+        QueryPerformanceCounter(&now);
+        elapsed = (double)(now.QuadPart - g_LastFrameTime.QuadPart) / (double)g_PerfFreq.QuadPart;
+    }
+    g_LastFrameTime = now;
+}
+
+HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* This, UINT SyncInterval, UINT Flags) {
+    if (GetAsyncKeyState(VK_NUMPAD9) & 1) LoadOriginalGeDoSaToIni();
+    EnforceFPSLimit();
+    return o_Present(This, SyncInterval, Flags);
+}
 
 HRESULT STDMETHODCALLTYPE Hook_GetDisplayModeList(IDXGIOutput* This, DXGI_FORMAT EnumFormat, UINT Flags, UINT* pNumModes, DXGI_MODE_DESC* pDesc) {
     HRESULT hr = o_GetDisplayModeList(This, EnumFormat, Flags, pNumModes, pDesc);
-    if (SUCCEEDED(hr) && g_EnableDownsampling && pNumModes) {
+    if (SUCCEEDED(hr) && pNumModes && !g_Resolutions.empty()) {
+        UINT extraCount = (UINT)g_Resolutions.size();
         if (pDesc == nullptr) {
-            *pNumModes += 1;
-        } else if (*pNumModes > 0) {
-            UINT idx = *pNumModes - 1;
-            *(pDesc + idx) = *pDesc;
-            (pDesc + idx)->Width = g_RenderWidth;
-            (pDesc + idx)->Height = g_RenderHeight;
-            (pDesc + idx)->RefreshRate.Numerator = g_PresentHz;
-            (pDesc + idx)->RefreshRate.Denominator = 1;
+            *pNumModes += extraCount;
+        } else if (*pNumModes > extraCount) {
+            UINT baseCount = *pNumModes - extraCount;
+            for (UINT i = 0; i < extraCount; ++i) {
+                UINT idx = baseCount + i;
+                *(pDesc + idx) = *pDesc;
+                (pDesc + idx)->Width = g_Resolutions.at(i).width;
+                (pDesc + idx)->Height = g_Resolutions.at(i).height;
+                (pDesc + idx)->RefreshRate.Numerator = g_Resolutions.at(i).hz;
+                (pDesc + idx)->RefreshRate.Denominator = 1;
+            }
         }
     }
     return hr;
@@ -132,7 +107,9 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppF
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        LoadConfig();
+        QueryPerformanceFrequency(&g_PerfFreq);
+        QueryPerformanceCounter(&g_LastFrameTime);
+        LoadOriginalGeDoSaToIni();
         LoadRealDXGI();
     }
     return TRUE;
