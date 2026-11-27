@@ -11,6 +11,15 @@ jobs:
           arch: x64
       - name: Compile dxgi.dll
         run: |
+          @"
+          LIBRARY dxgi
+          EXPORTS
+              CreateDXGIFactory
+              CreateDXGIFactory1
+              CreateDXGIFactory2
+              DXGIDeclareAdapterRemovalSupport
+              DXGIGetDebugInterface1
+          "@ | Out-File -FilePath src/dxgi.def -Encoding ascii
           cl /LD /O2 /EHsc src/dxgi_proxy.cpp /link /DEF:src/dxgi.def user32.lib d3d11.lib d3d12.lib dxgi.lib /OUT:dxgi.dll
       - name: Upload DLL
         uses: actions/upload-artifact@v4
