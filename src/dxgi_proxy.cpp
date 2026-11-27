@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <dxgi1_6.h>
-#include <d3d11.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -10,12 +9,6 @@
 
 struct ResMode { int w; int h; int hz; };
 static std::vector<ResMode> g_Res;
-static int g_PresentW = 1920, g_PresentH = 1080, g_PresentHz = 165;
-static int g_OverrideW = 0, g_OverrideH = 0;
-static bool g_ForceAlwaysDS = false;
-static float g_FPSLimit = 0.0f;
-static std::string g_ScalingType = "bicubic";
-
 static HMODULE g_RealDXGI = nullptr;
 typedef HRESULT(WINAPI* PFN_F0)(REFIID, void**);
 typedef HRESULT(WINAPI* PFN_F1)(REFIID, void**);
@@ -23,12 +16,6 @@ typedef HRESULT(WINAPI* PFN_F2)(UINT, REFIID, void**);
 static PFN_F0 o_F0 = nullptr;
 static PFN_F1 o_F1 = nullptr;
 static PFN_F2 o_F2 = nullptr;
-
-typedef BOOL(WINAPI* PFN_EDW)(LPCWSTR, DWORD, DEVMODEW*);
-typedef BOOL(WINAPI* PFN_EDA)(LPCSTR, DWORD, DEVMODEA*);
-static PFN_EDW o_EDW = nullptr;
-static PFN_EDA o_EDA = nullptr;
-static DWORD g_BaseW = 0, g_BaseA = 0;
 
 void WriteDefaultIni(const std::string& ini) {
     std::ofstream f(ini.c_str());
@@ -54,7 +41,6 @@ void LoadIni() {
     std::string dir(p); size_t pos = dir.find_last_of("\\/");
     if (pos != std::string::npos) dir = dir.substr(0, pos + 1);
     std::string ini = dir + "GeDoSaTo.ini";
-
     if (GetFileAttributesA(ini.c_str()) == INVALID_FILE_ATTRIBUTES) WriteDefaultIni(ini);
 
     std::ifstream file(ini.c_str()); std::string line;
@@ -62,82 +48,13 @@ void LoadIni() {
         size_t first = line.find_first_not_of(" \t\r\n");
         if (first == std::string::npos || line.at(first) == '#') continue;
         std::istringstream iss(line.substr(first)); std::string k, v;
-        if (!(iss >> k >> v)) continue;
-        if (k == "renderResolution") {
+        if (iss >> k >> v && k == "renderResolution") {
             int w = 0, h = 0, hz = 165;
-            if (sscanf_s(v.c_str(), "%dx%d@%d", &w, &h, &hz) >= 2 && w > 0 && h > 0) g_Res.push_back({ w, h, hz });
-        } else if (k == "presentWidth") g_PresentW = atoi(v.c_str());
-        else if (k == "presentHeight") g_PresentH = atoi(v.c_str());
-        else if (k == "presentHz") g_PresentHz = atoi(v.c_str());
-        else if (k == "scalingType") g_ScalingType = v;
-        else if (k == "fpsLimit") g_FPSLimit = (float)atof(v.c_str());
-        else if (k == "forceAlwaysDownsamplingRes") g_ForceAlwaysDS = (v == "true" || v == "1");
-        else if (k == "overrideWidth") g_OverrideW = atoi(v.c_str());
-        else if (k == "overrideHeight") g_OverrideH = atoi(v.c_str());
+            if (sscanf_s(v.c_str(), "%dx%d@%d", &w, &h, &hz) >= 2 && w > 0 && h > 0)
+                g_Res.push_back({ w, h, hz });
+        }
     }
     if (g_Res.empty()) g_Res.push_back({ 3840, 2160, 165 });
-}
-
-BOOL WINAPI H_EDW(LPCWSTR d, DWORD m, DEVMODEW* dm) {
-    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDW(d, m, dm);
-    if (o_EDW(d, m, dm)) {
-        if (m >= g_BaseW) g_BaseW = m + 1;
-        if (g_OverrideW > 0 && g_OverrideH > 0 && dm && (int)dm->dmPelsWidth == g_OverrideW && (int)dm->dmPelsHeight == g_OverrideH) {
-            dm->dmPelsWidth = g_Res.at(0).w; dm->dmPelsHeight = g_Res.at(0).h;
-        }
-        return TRUE;
-    }
-    if (m >= g_BaseW && (m - g_BaseW) < g_Res.size() && dm) {
-        o_EDW(d, ENUM_CURRENT_SETTINGS, dm);
-        size_t i = m - g_BaseW;
-        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
-        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-        return TRUE;
-    }
-    return FALSE;
-}
-
-BOOL WINAPI H_EDA(LPCSTR d, DWORD m, DEVMODEA* dm) {
-    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDA(d, m, dm);
-    if (o_EDA(d, m, dm)) {
-        if (m >= g_BaseA) g_BaseA = m + 1;
-        if (g_OverrideW > 0 && g_OverrideH > 0 && dm && (int)dm->dmPelsWidth == g_OverrideW && (int)dm->dmPelsHeight == g_OverrideH) {
-            dm->dmPelsWidth = g_Res.at(0).w; dm->dmPelsHeight = g_Res.at(0).h;
-        }
-        return TRUE;
-    }
-    if (m >= g_BaseA && (m - g_BaseA) < g_Res.size() && dm) {
-        o_EDA(d, ENUM_CURRENT_SETTINGS, dm);
-        size_t i = m - g_BaseA;
-        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
-        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-        return TRUE;
-    }
-    return FALSE;
-}
-
-DWORD WINAPI DelayedSafeHook(LPVOID) {
-    Sleep(4000);
-    HMODULE h = GetModuleHandleA(nullptr);
-    if (!h) return 0;
-    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)h + ((PIMAGE_DOS_HEADER)h)->e_lfanew);
-    DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!rva) return 0;
-    for (PIMAGE_IMPORT_DESCRIPTOR imp = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)h + rva); imp->Name; imp++) {
-        if (_stricmp((const char*)((BYTE*)h + imp->Name), "user32.dll") == 0) {
-            for (PIMAGE_THUNK_DATA t = (PIMAGE_THUNK_DATA)((BYTE*)h + imp->FirstThunk); t->u1.Function; t++) {
-                void** fp = (void**)&t->u1.Function;
-                DWORD old;
-                if (*fp == (void*)o_EDW || *fp == (void*)o_EDA) {
-                    if (VirtualProtect(fp, sizeof(void*), PAGE_READWRITE, &old)) {
-                        *fp = (*fp == (void*)o_EDW) ? (void*)H_EDW : (void*)H_EDA;
-                        VirtualProtect(fp, sizeof(void*), old, &old);
-                    }
-                }
-            }
-        }
-    }
-    return 0;
 }
 
 bool InitDXGI() {
@@ -151,83 +68,23 @@ bool InitDXGI() {
     return true;
 }
 
-typedef HRESULT(STDMETHODCALLTYPE* PFN_GDML)(IDXGIOutput*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC*);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_GDML1)(IDXGIOutput1*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC1*);
-static PFN_GDML o_GDML = nullptr;
-static PFN_GDML1 o_GDML1 = nullptr;
-
-HRESULT STDMETHODCALLTYPE H_GDML(IDXGIOutput* T, DXGI_FORMAT F, UINT Fl, UINT* N, DXGI_MODE_DESC* D) {
-    HRESULT hr = o_GDML(T, F, Fl, N, D);
-    if (SUCCEEDED(hr) && N && !g_Res.empty()) {
-        UINT ex = (UINT)g_Res.size();
-        if (!D) *N += ex;
-        else if (*N > ex) {
-            UINT b = *N - ex;
-            for (UINT i = 0; i < ex; ++i) {
-                *(D + b + i) = *D;
-                (D + b + i)->Width = g_Res.at(i).w; (D + b + i)->Height = g_Res.at(i).h;
-                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz; (D + b + i)->RefreshRate.Denominator = 1;
-            }
-        }
-    }
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE H_GDML1(IDXGIOutput1* T, DXGI_FORMAT F, UINT Fl, UINT* N, DXGI_MODE_DESC1* D) {
-    HRESULT hr = o_GDML1(T, F, Fl, N, D);
-    if (SUCCEEDED(hr) && N && !g_Res.empty()) {
-        UINT ex = (UINT)g_Res.size();
-        if (!D) *N += ex;
-        else if (*N > ex) {
-            UINT b = *N - ex;
-            for (UINT i = 0; i < ex; ++i) {
-                *(D + b + i) = *D;
-                (D + b + i)->Width = g_Res.at(i).w; (D + b + i)->Height = g_Res.at(i).h;
-                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz; (D + b + i)->RefreshRate.Denominator = 1;
-            }
-        }
-    }
-    return hr;
-}
-
-void HookAllOutputs(void* ppF) {
-    IDXGIFactory1* f = nullptr;
-    if (ppF && SUCCEEDED(((IUnknown*)ppF)->QueryInterface(__uuidof(IDXGIFactory1), (void**)&f))) {
-        IDXGIAdapter1* a = nullptr;
-        for (UINT ai = 0; SUCCEEDED(f->EnumAdapters1(ai, &a)); ++ai) {
-            IDXGIOutput* o = nullptr;
-            for (UINT oi = 0; SUCCEEDED(a->EnumOutputs(oi, &o)); ++oi) {
-                void** vt = *(void***)o;
-                if (vt && *(vt + 7) != (void*)H_GDML) {
-                    DWORD old;
-                    if (VirtualProtect(vt + 7, sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
-                        if (!o_GDML) o_GDML = (PFN_GDML)(*(vt + 7));
-                        *(vt + 7) = (void*)H_GDML;
-                        VirtualProtect(vt + 7, sizeof(void*), old, &old);
-                    }
-                }
-                IDXGIOutput1* o1 = nullptr;
-                if (SUCCEEDED(o->QueryInterface(__uuidof(IDXGIOutput1), (void**)&o1))) {
-                    void** vt1 = *(void***)o1;
-                    if (vt1 && *(vt1 + 19) != (void*)H_GDML1) {
-                        DWORD old1;
-                        if (VirtualProtect(vt1 + 19, sizeof(void*), PAGE_EXECUTE_READWRITE, &old1)) {
-                            if (!o_GDML1) o_GDML1 = (PFN_GDML1)(*(vt1 + 19));
-                            *(vt1 + 19) = (void*)H_GDML1;
-                            VirtualProtect(vt1 + 19, sizeof(void*), old1, &old1);
-                        }
-                    }
-                    o1->Release();
-                }
-                o->Release();
-            }
-            a->Release();
-        }
-        f->Release();
-    }
-}
-
 extern "C" HRESULT WINAPI CreateDXGIFactory(REFIID r, void** p) {
     if (!InitDXGI() || !o_F0) return E_FAIL;
-    HRESULT hr = o_F0(r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
+    return o_F0(r, p);
+}
+extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID r, void** p) {
+    if (!InitDXGI() || !o_F1) return E_FAIL;
+    return o_F1(r, p);
+}
+extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT fl, REFIID r, void** p) {
+    if (!InitDXGI() || !o_F2) return E_FAIL;
+    return o_F2(fl, r, p);
+}
+
+BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID lp) {
+    if (r == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(h);
+        LoadIni();
+    }
+    return TRUE;
 }
