@@ -18,11 +18,8 @@ static PFN_CreateDXGIFactory2 o_CreateDXGIFactory2 = nullptr;
 
 static int g_RenderWidth = 3840;
 static int g_RenderHeight = 2160;
-static int g_PresentHz = 60;
+static int g_PresentHz = 165;
 static bool g_EnableDownsampling = true;
-static int g_FPSLimit = 0;
-static LARGE_INTEGER g_PerfFreq;
-static LARGE_INTEGER g_LastFrameTime;
 
 void LoadConfig() {
     char modulePath[MAX_PATH];
@@ -37,18 +34,19 @@ void LoadConfig() {
         WritePrivateProfileStringA("Resolution", "EnableDownsampling", "1", iniPath.c_str());
         WritePrivateProfileStringA("Resolution", "RenderWidth", "3840", iniPath.c_str());
         WritePrivateProfileStringA("Resolution", "RenderHeight", "2160", iniPath.c_str());
-        WritePrivateProfileStringA("Resolution", "PresentHz", "60", iniPath.c_str());
-        WritePrivateProfileStringA("Scaling", "ScalingType", "lanczos", iniPath.c_str());
-        WritePrivateProfileStringA("PostProcessing", "EnablePostprocessing", "1", iniPath.c_str());
-        WritePrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", iniPath.c_str());
+        WritePrivateProfileStringA("Resolution", "PresentHz", "165", iniPath.c_str());
+        WritePrivateProfileStringA("Scaling", "ScalingType", "bicubic", iniPath.c_str());
+        WritePrivateProfileStringA("PostProcessing", "EnablePostprocessing", "0", iniPath.c_str());
+        WritePrivateProfileStringA("PostProcessing", "SharpenStrength", "0.0", iniPath.c_str());
         WritePrivateProfileStringA("Framerate", "FPSLimit", "0", iniPath.c_str());
+        WritePrivateProfileStringA("Textures", "EnableTextureOverride", "0", iniPath.c_str());
+        WritePrivateProfileStringA("Textures", "DumpTextures", "0", iniPath.c_str());
     }
 
     g_EnableDownsampling = GetPrivateProfileIntA("Resolution", "EnableDownsampling", 1, iniPath.c_str()) != 0;
     g_RenderWidth = GetPrivateProfileIntA("Resolution", "RenderWidth", 3840, iniPath.c_str());
     g_RenderHeight = GetPrivateProfileIntA("Resolution", "RenderHeight", 2160, iniPath.c_str());
-    g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 60, iniPath.c_str());
-    g_FPSLimit = GetPrivateProfileIntA("Framerate", "FPSLimit", 0, iniPath.c_str());
+    g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 165, iniPath.c_str());
 }
 
 bool LoadRealDXGI() {
@@ -68,18 +66,6 @@ bool LoadRealDXGI() {
 typedef HRESULT(STDMETHODCALLTYPE* PFN_GetDisplayModeList)(IDXGIOutput*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC*);
 static PFN_GetDisplayModeList o_GetDisplayModeList = nullptr;
 
-void HookVTable(void* pInterface, int index, void* hookFunc, void** origFunc) {
-    if (!pInterface) return;
-    void** vtable = *(void***)pInterface;
-    if (!vtable || *(vtable + index) == hookFunc) return;
-    DWORD oldProtect;
-    if (VirtualProtect(vtable + index, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        if (!*origFunc) *origFunc = *(vtable + index);
-        *(vtable + index) = hookFunc;
-        VirtualProtect(vtable + index, sizeof(void*), oldProtect, &oldProtect);
-    }
-}
-
 HRESULT STDMETHODCALLTYPE Hook_GetDisplayModeList(IDXGIOutput* This, DXGI_FORMAT EnumFormat, UINT Flags, UINT* pNumModes, DXGI_MODE_DESC* pDesc) {
     HRESULT hr = o_GetDisplayModeList(This, EnumFormat, Flags, pNumModes, pDesc);
     if (SUCCEEDED(hr) && g_EnableDownsampling && pNumModes) {
@@ -97,7 +83,7 @@ HRESULT STDMETHODCALLTYPE Hook_GetDisplayModeList(IDXGIOutput* This, DXGI_FORMAT
     return hr;
 }
 
-void InstallOutputHook(void* ppFactory) {
+void PatchOutputSafe(void* ppFactory) {
     if (!ppFactory) return;
     IDXGIFactory* factory = nullptr;
     if (SUCCEEDED(((IUnknown*)ppFactory)->QueryInterface(__uuidof(IDXGIFactory), (void**)&factory))) {
@@ -105,7 +91,15 @@ void InstallOutputHook(void* ppFactory) {
         if (SUCCEEDED(factory->EnumAdapters(0, &adapter))) {
             IDXGIOutput* output = nullptr;
             if (SUCCEEDED(adapter->EnumOutputs(0, &output))) {
-                HookVTable(output, 7, (void*)Hook_GetDisplayModeList, (void**)&o_GetDisplayModeList);
+                void** vtable = *(void***)output;
+                if (vtable && *(vtable + 7) != (void*)Hook_GetDisplayModeList) {
+                    DWORD oldProtect;
+                    if (VirtualProtect(vtable + 7, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                        if (!o_GetDisplayModeList) o_GetDisplayModeList = (PFN_GetDisplayModeList)(*(vtable + 7));
+                        *(vtable + 7) = (void*)Hook_GetDisplayModeList;
+                        VirtualProtect(vtable + 7, sizeof(void*), oldProtect, &oldProtect);
+                    }
+                }
                 output->Release();
             }
             adapter->Release();
@@ -117,29 +111,27 @@ void InstallOutputHook(void* ppFactory) {
 extern "C" HRESULT WINAPI CreateDXGIFactory(REFIID riid, void** ppFactory) {
     if (!LoadRealDXGI() || !o_CreateDXGIFactory) return E_FAIL;
     HRESULT hr = o_CreateDXGIFactory(riid, ppFactory);
-    if (SUCCEEDED(hr) && ppFactory) InstallOutputHook(*ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) PatchOutputSafe(*ppFactory);
     return hr;
 }
 
 extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     if (!LoadRealDXGI() || !o_CreateDXGIFactory1) return E_FAIL;
     HRESULT hr = o_CreateDXGIFactory1(riid, ppFactory);
-    if (SUCCEEDED(hr) && ppFactory) InstallOutputHook(*ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) PatchOutputSafe(*ppFactory);
     return hr;
 }
 
 extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     if (!LoadRealDXGI() || !o_CreateDXGIFactory2) return E_FAIL;
     HRESULT hr = o_CreateDXGIFactory2(Flags, riid, ppFactory);
-    if (SUCCEEDED(hr) && ppFactory) InstallOutputHook(*ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) PatchOutputSafe(*ppFactory);
     return hr;
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        QueryPerformanceFrequency(&g_PerfFreq);
-        QueryPerformanceCounter(&g_LastFrameTime);
         LoadConfig();
         LoadRealDXGI();
     }
