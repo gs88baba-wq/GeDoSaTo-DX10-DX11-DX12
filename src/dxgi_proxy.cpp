@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <dxgi1_6.h>
+#include <d3d11.h>
+#include <d3d12.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -69,7 +71,9 @@ bool InitDXGI() {
 }
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_GDML)(IDXGIOutput*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC*);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_GDML1)(IDXGIOutput1*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC1*);
 static PFN_GDML o_GDML = nullptr;
+static PFN_GDML1 o_GDML1 = nullptr;
 
 HRESULT STDMETHODCALLTYPE H_GDML(IDXGIOutput* T, DXGI_FORMAT F, UINT Fl, UINT* N, DXGI_MODE_DESC* D) {
     HRESULT hr = o_GDML(T, F, Fl, N, D);
@@ -90,13 +94,32 @@ HRESULT STDMETHODCALLTYPE H_GDML(IDXGIOutput* T, DXGI_FORMAT F, UINT Fl, UINT* N
     return hr;
 }
 
-void HookOut(void* ppF) {
-    IDXGIFactory* f = nullptr;
-    if (ppF && SUCCEEDED(((IUnknown*)ppF)->QueryInterface(__uuidof(IDXGIFactory), (void**)&f))) {
-        IDXGIAdapter* a = nullptr;
-        if (SUCCEEDED(f->EnumAdapters(0, &a))) {
+HRESULT STDMETHODCALLTYPE H_GDML1(IDXGIOutput1* T, DXGI_FORMAT F, UINT Fl, UINT* N, DXGI_MODE_DESC1* D) {
+    HRESULT hr = o_GDML1(T, F, Fl, N, D);
+    if (SUCCEEDED(hr) && N && !g_Res.empty()) {
+        UINT ex = (UINT)g_Res.size();
+        if (!D) *N += ex;
+        else if (*N > ex) {
+            UINT b = *N - ex;
+            for (UINT i = 0; i < ex; ++i) {
+                *(D + b + i) = *D;
+                (D + b + i)->Width = g_Res.at(i).w;
+                (D + b + i)->Height = g_Res.at(i).h;
+                (D + b + i)->RefreshRate.Numerator = g_Res.at(i).hz;
+                (D + b + i)->RefreshRate.Denominator = 1;
+            }
+        }
+    }
+    return hr;
+}
+
+void HookAllOutputs(void* ppF) {
+    IDXGIFactory1* f = nullptr;
+    if (ppF && SUCCEEDED(((IUnknown*)ppF)->QueryInterface(__uuidof(IDXGIFactory1), (void**)&f))) {
+        IDXGIAdapter1* a = nullptr;
+        for (UINT ai = 0; SUCCEEDED(f->EnumAdapters1(ai, &a)); ++ai) {
             IDXGIOutput* o = nullptr;
-            if (SUCCEEDED(a->EnumOutputs(0, &o))) {
+            for (UINT oi = 0; SUCCEEDED(a->EnumOutputs(oi, &o)); ++oi) {
                 void** vt = *(void***)o;
                 if (vt && *(vt + 7) != (void*)H_GDML) {
                     DWORD old;
@@ -105,6 +128,19 @@ void HookOut(void* ppF) {
                         *(vt + 7) = (void*)H_GDML;
                         VirtualProtect(vt + 7, sizeof(void*), old, &old);
                     }
+                }
+                IDXGIOutput1* o1 = nullptr;
+                if (SUCCEEDED(o->QueryInterface(__uuidof(IDXGIOutput1), (void**)&o1))) {
+                    void** vt1 = *(void***)o1;
+                    if (vt1 && *(vt1 + 19) != (void*)H_GDML1) {
+                        DWORD old1;
+                        if (VirtualProtect(vt1 + 19, sizeof(void*), PAGE_EXECUTE_READWRITE, &old1)) {
+                            if (!o_GDML1) o_GDML1 = (PFN_GDML1)(*(vt1 + 19));
+                            *(vt1 + 19) = (void*)H_GDML1;
+                            VirtualProtect(vt1 + 19, sizeof(void*), old1, &old1);
+                        }
+                    }
+                    o1->Release();
                 }
                 o->Release();
             }
@@ -116,15 +152,15 @@ void HookOut(void* ppF) {
 
 extern "C" HRESULT WINAPI CreateDXGIFactory(REFIID r, void** p) {
     if (!InitDXGI() || !o_F0) return E_FAIL;
-    HRESULT hr = o_F0(r, p); if (SUCCEEDED(hr) && p) HookOut(*p); return hr;
+    HRESULT hr = o_F0(r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
 }
 extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID r, void** p) {
     if (!InitDXGI() || !o_F1) return E_FAIL;
-    HRESULT hr = o_F1(r, p); if (SUCCEEDED(hr) && p) HookOut(*p); return hr;
+    HRESULT hr = o_F1(r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
 }
 extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT fl, REFIID r, void** p) {
     if (!InitDXGI() || !o_F2) return E_FAIL;
-    HRESULT hr = o_F2(fl, r, p); if (SUCCEEDED(hr) && p) HookOut(*p); return hr;
+    HRESULT hr = o_F2(fl, r, p); if (SUCCEEDED(hr) && p) HookAllOutputs(*p); return hr;
 }
 
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID lp) {
