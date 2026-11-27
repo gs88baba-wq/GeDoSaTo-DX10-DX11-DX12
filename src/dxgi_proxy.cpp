@@ -78,77 +78,6 @@ void LoadConfig() {
     CreateDirectoryA("gedosato_textures\\dump", nullptr);
 }
 
-static const char* g_DownsampleHLSL = R"(
-Texture2D texInput : register(t0);
-SamplerState samLinear : register(s0);
-cbuffer Params : register(b0) {
-    float2 srcSize;
-    float2 dstSize;
-    int scalingMode;
-    float sharpenStrength;
-    float2 pad;
-};
-float LanczosWeight(float x) {
-    if (x == 0.0) return 1.0;
-    if (abs(x) >= 3.0) return 0.0;
-    float pi_x = 3.14159265 * x;
-    return (sin(pi_x) / pi_x) * (sin(pi_x / 3.0) / (pi_x / 3.0));
-}
-float4 CubicWeight(float v) {
-    float4 n = float4(1.0, 2.0, 3.0, 4.0) - v;
-    float4 s = n * n * n;
-    float x = s.x;
-    float y = s.y - 4.0 * s.x;
-    float z = s.z - 4.0 * s.y + 6.0 * s.x;
-    float w = 6.0 - x - y - z;
-    return float4(x, y, z, w) * (1.0 / 6.0);
-}
-float4 PSMain(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
-    float2 texel = 1.0 / srcSize;
-    float4 color = texInput.Sample(samLinear, uv);
-    if (scalingMode == 1) {
-        float2 coord = uv * srcSize - 0.5;
-        float2 f = frac(coord);
-        coord -= f;
-        float4 xc = CubicWeight(f.x);
-        float4 yc = CubicWeight(f.y);
-        float4 c = float4(coord.x - 0.5, coord.x + 1.5, coord.y - 0.5, coord.y + 1.5);
-        float4 s = float4(xc.x + xc.y, xc.z + xc.w, yc.x + yc.y, yc.z + yc.w);
-        float4 offset = c + float4(xc.y, xc.w, yc.y, yc.w) / s;
-        float4 s0 = texInput.Sample(samLinear, float2(offset.x, offset.z) * texel);
-        float4 s1 = texInput.Sample(samLinear, float2(offset.y, offset.z) * texel);
-        float4 s2 = texInput.Sample(samLinear, float2(offset.x, offset.w) * texel);
-        float4 s3 = texInput.Sample(samLinear, float2(offset.y, offset.w) * texel);
-        float sx = s.x / (s.x + s.y);
-        float sy = s.z / (s.z + s.w);
-        color = lerp(lerp(s3, s2, sx), lerp(s1, s0, sx), sy);
-    } else if (scalingMode == 2) {
-        float2 center = uv * srcSize - 0.5;
-        float2 base = floor(center);
-        float4 sum = 0.0;
-        float wSum = 0.0;
-        [unroll] for (int y = -2; y <= 3; y++) {
-            float wy = LanczosWeight((base.y + y) - center.y);
-            [unroll] for (int x = -2; x <= 3; x++) {
-                float wx = LanczosWeight((base.x + x) - center.x);
-                float w = wx * wy;
-                sum += texInput.Sample(samLinear, (base + float2(x, y) + 0.5) * texel) * w;
-                wSum += w;
-            }
-        }
-        color = sum / max(wSum, 0.0001);
-    }
-    if (sharpenStrength > 0.0) {
-        float4 blur = (texInput.Sample(samLinear, uv + float2(texel.x, 0)) +
-                       texInput.Sample(samLinear, uv - float2(texel.x, 0)) +
-                       texInput.Sample(samLinear, uv + float2(0, texel.y)) +
-                       texInput.Sample(samLinear, uv - float2(0, texel.y))) * 0.25;
-        color += (color - blur) * sharpenStrength;
-    }
-    return saturate(color);
-}
-)";
-
 bool LoadRealDXGI() {
     if (g_RealDXGI) return true;
     char sysDir[MAX_PATH];
@@ -205,3 +134,69 @@ void HookVTable(void* pInterface, int index, void* hookFunc, void** origFunc) {
     VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
     if (!*origFunc) *origFunc = vtable[index];
     vtable[index] = hookFunc;
+    VirtualProtect(&vtable[index], sizeof(void*), oldProtect, &oldProtect);
+}
+
+HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* This, UINT SyncInterval, UINT Flags) {
+    HandleHotkeys();
+    EnforceFPSLimit();
+    return o_Present(This, SyncInterval, Flags);
+}
+
+HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    if (g_EnableDownsampling && Width > 0 && Height > 0) {
+        Width = g_RenderWidth;
+        Height = g_RenderHeight;
+    }
+    return o_ResizeBuffers(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+}
+
+void HookSwapChain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) return;
+    HookVTable(pSwapChain, 8, (void*)Hook_Present, (void**)&o_Present);
+    HookVTable(pSwapChain, 13, (void*)Hook_ResizeBuffers, (void**)&o_ResizeBuffers);
+}
+
+HRESULT STDMETHODCALLTYPE Hook_GetDisplayModeList(IDXGIOutput* This, DXGI_FORMAT EnumFormat, UINT Flags, UINT* pNumModes, DXGI_MODE_DESC* pDesc) {
+    HRESULT hr = o_GetDisplayModeList(This, EnumFormat, Flags, pNumModes, pDesc);
+    if (SUCCEEDED(hr) && g_EnableDownsampling && pNumModes) {
+        if (pDesc == nullptr) {
+            *pNumModes += 1;
+        } else if (*pNumModes > 0) {
+            UINT idx = *pNumModes - 1;
+            pDesc[idx] = pDesc[0];
+            pDesc[idx].Width = g_RenderWidth;
+            pDesc[idx].Height = g_RenderHeight;
+            pDesc[idx].RefreshRate.Numerator = g_PresentHz;
+            pDesc[idx].RefreshRate.Denominator = 1;
+        }
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory* This, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain) {
+    if (g_EnableDownsampling && pDesc) {
+        pDesc->BufferDesc.Width = g_RenderWidth;
+        pDesc->BufferDesc.Height = g_RenderHeight;
+    }
+    HRESULT hr = o_CreateSwapChain(This, pDevice, pDesc, ppSwapChain);
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) HookSwapChain(*ppSwapChain);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory2* This, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+    DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
+    if (g_EnableDownsampling && pDesc) {
+        modifiedDesc = *pDesc;
+        modifiedDesc.Width = g_RenderWidth;
+        modifiedDesc.Height = g_RenderHeight;
+        pDesc = &modifiedDesc;
+    }
+    HRESULT hr = o_CreateSwapChainForHwnd(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) HookSwapChain(*ppSwapChain);
+    return hr;
+}
+
+void InstallDXGIHooks(void* ppFactory) {
+    if (!ppFactory) return;
+    IDXGIFactory2* factory2 = nullptr;
