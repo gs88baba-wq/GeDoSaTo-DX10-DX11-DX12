@@ -103,6 +103,7 @@ bool LoadRealDXGI() {
     return true;
 }
 
+
 typedef HRESULT(STDMETHODCALLTYPE* PFN_GetDisplayModeList)(IDXGIOutput*, DXGI_FORMAT, UINT, UINT*, DXGI_MODE_DESC*);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChainForHwnd)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
@@ -197,3 +198,74 @@ HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory2* This, IUnkn
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (g_EnableDownsampling && pDesc) {
         modifiedDesc = *pDesc;
+        modifiedDesc.Width = g_RenderWidth;
+        modifiedDesc.Height = g_RenderHeight;
+        pDesc = &modifiedDesc;
+    }
+    HRESULT hr = o_CreateSwapChainForHwnd(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) HookSwapChain(*ppSwapChain);
+    return hr;
+}
+
+void InstallDXGIHooks(void* ppFactory) {
+    if (!ppFactory) return;
+    IDXGIFactory2* factory2 = nullptr;
+    if (SUCCEEDED(((IUnknown*)ppFactory)->QueryInterface(__uuidof(IDXGIFactory2), (void**)&factory2))) {
+        HookVTable(factory2, 10, (void*)Hook_CreateSwapChain, (void**)&o_CreateSwapChain);
+        HookVTable(factory2, 15, (void*)Hook_CreateSwapChainForHwnd, (void**)&o_CreateSwapChainForHwnd);
+        IDXGIAdapter* adapter = nullptr;
+        if (SUCCEEDED(factory2->EnumAdapters(0, &adapter))) {
+            IDXGIOutput* output = nullptr;
+            if (SUCCEEDED(adapter->EnumOutputs(0, &output))) {
+                HookVTable(output, 7, (void*)Hook_GetDisplayModeList, (void**)&o_GetDisplayModeList);
+                output->Release();
+            }
+            adapter->Release();
+        }
+        factory2->Release();
+    }
+}
+
+extern "C" HRESULT WINAPI CreateDXGIFactory(REFIID riid, void** ppFactory) {
+    if (!LoadRealDXGI() || !o_CreateDXGIFactory) return E_FAIL;
+    HRESULT hr = o_CreateDXGIFactory(riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) InstallDXGIHooks(*ppFactory);
+    return hr;
+}
+
+extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+    if (!LoadRealDXGI() || !o_CreateDXGIFactory1) return E_FAIL;
+    HRESULT hr = o_CreateDXGIFactory1(riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) InstallDXGIHooks(*ppFactory);
+    return hr;
+}
+
+extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
+    if (!LoadRealDXGI() || !o_CreateDXGIFactory2) return E_FAIL;
+    HRESULT hr = o_CreateDXGIFactory2(Flags, riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory) InstallDXGIHooks(*ppFactory);
+    return hr;
+}
+
+extern "C" HRESULT WINAPI DXGIDeclareAdapterRemovalSupport() {
+    if (!LoadRealDXGI() || !o_DXGIDeclareAdapterRemovalSupport) return E_FAIL;
+    return o_DXGIDeclareAdapterRemovalSupport();
+}
+
+extern "C" HRESULT WINAPI DXGIGetDebugInterface1(UINT Flags, REFIID riid, void** pDebug) {
+    if (!LoadRealDXGI() || !o_DXGIGetDebugInterface1) return E_FAIL;
+    return o_DXGIGetDebugInterface1(Flags, riid, pDebug);
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hModule);
+        QueryPerformanceFrequency(&g_PerfFreq);
+        QueryPerformanceCounter(&g_LastFrameTime);
+        LoadConfig();
+        LoadRealDXGI();
+    } else if (reason == DLL_PROCESS_DETACH) {
+        if (g_RealDXGI) FreeLibrary(g_RealDXGI);
+    }
+    return TRUE;
+}
