@@ -23,9 +23,6 @@ jobs:
               DXGID3D10CreateLayeredDevice=C:\Windows\System32\dxgi.DXGID3D10CreateLayeredDevice
               DXGID3D10GetLayeredDeviceSize=C:\Windows\System32\dxgi.DXGID3D10GetLayeredDeviceSize
               DXGID3D10RegisterLayers=C:\Windows\System32\dxgi.DXGID3D10RegisterLayers
-              ApplyCompatResolutionQuirking=C:\Windows\System32\dxgi.ApplyCompatResolutionQuirking
-              CompatString=C:\Windows\System32\dxgi.CompatString
-              CompatValue=C:\Windows\System32\dxgi.CompatValue
               DXGIDumpJournal=C:\Windows\System32\dxgi.DXGIDumpJournal
               DXGIReportAdapterConfiguration=C:\Windows\System32\dxgi.DXGIReportAdapterConfiguration
               PIXBeginCapture=C:\Windows\System32\dxgi.PIXBeginCapture
