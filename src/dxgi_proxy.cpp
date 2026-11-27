@@ -26,7 +26,7 @@ static int g_RenderHeight = 2160;
 static int g_PresentWidth = 1920;
 static int g_PresentHeight = 1080;
 static int g_PresentHz = 60;
-static char g_ScalingType = "lanczos";
+static char g_ScalingType[32] = "lanczos";
 static bool g_EnableDownsampling = true;
 static bool g_EnablePostprocessing = true;
 static float g_SharpenStrength = 0.65f;
@@ -66,7 +66,7 @@ void LoadConfig() {
     g_PresentHz = GetPrivateProfileIntA("Resolution", "PresentHz", 60, iniPath);
     GetPrivateProfileStringA("Scaling", "ScalingType", "lanczos", g_ScalingType, sizeof(g_ScalingType), iniPath);
     g_EnablePostprocessing = GetPrivateProfileIntA("PostProcessing", "EnablePostprocessing", 1, iniPath) != 0;
-    char sharpBuf;
+    char sharpBuf[32];
     GetPrivateProfileStringA("PostProcessing", "SharpenStrength", "0.65", sharpBuf, sizeof(sharpBuf), iniPath);
     g_SharpenStrength = (float)atof(sharpBuf);
     g_FPSLimit = GetPrivateProfileIntA("Framerate", "FPSLimit", 0, iniPath);
@@ -205,4 +205,3 @@ void HookVTable(void* pInterface, int index, void* hookFunc, void** origFunc) {
     VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
     if (!*origFunc) *origFunc = vtable[index];
     vtable[index] = hookFunc;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProtect, &oldProtect);
