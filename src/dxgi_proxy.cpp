@@ -17,12 +17,6 @@ static PFN_F0 o_F0 = nullptr;
 static PFN_F1 o_F1 = nullptr;
 static PFN_F2 o_F2 = nullptr;
 
-typedef BOOL(WINAPI* PFN_EDW)(LPCWSTR, DWORD, DEVMODEW*);
-typedef BOOL(WINAPI* PFN_EDA)(LPCSTR, DWORD, DEVMODEA*);
-static PFN_EDW o_EDW = nullptr;
-static PFN_EDA o_EDA = nullptr;
-static DWORD g_BaseW = 0, g_BaseA = 0;
-
 void LoadIni() {
     g_Res.clear();
     char p[MAX_PATH];
@@ -61,53 +55,6 @@ void LoadIni() {
         }
     }
     if (g_Res.empty()) g_Res.push_back({ 3840, 2160, 165 });
-}
-
-BOOL WINAPI H_EDW(LPCWSTR d, DWORD m, DEVMODEW* dm) {
-    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDW(d, m, dm);
-    if (o_EDW(d, m, dm)) { if (m >= g_BaseW) g_BaseW = m + 1; return TRUE; }
-    if (m >= g_BaseW && (m - g_BaseW) < g_Res.size() && dm) {
-        o_EDW(d, ENUM_CURRENT_SETTINGS, dm);
-        size_t i = m - g_BaseW;
-        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
-        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-        return TRUE;
-    }
-    return FALSE;
-}
-
-BOOL WINAPI H_EDA(LPCSTR d, DWORD m, DEVMODEA* dm) {
-    if (m == ENUM_CURRENT_SETTINGS || m == ENUM_REGISTRY_SETTINGS) return o_EDA(d, m, dm);
-    if (o_EDA(d, m, dm)) { if (m >= g_BaseA) g_BaseA = m + 1; return TRUE; }
-    if (m >= g_BaseA && (m - g_BaseA) < g_Res.size() && dm) {
-        o_EDA(d, ENUM_CURRENT_SETTINGS, dm);
-        size_t i = m - g_BaseA;
-        dm->dmPelsWidth = g_Res.at(i).w; dm->dmPelsHeight = g_Res.at(i).h; dm->dmDisplayFrequency = g_Res.at(i).hz;
-        dm->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-        return TRUE;
-    }
-    return FALSE;
-}
-
-void PatchIAT() {
-    HMODULE h = GetModuleHandleA(nullptr);
-    if (!h) return;
-    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)h + ((PIMAGE_DOS_HEADER)h)->e_lfanew);
-    DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!rva) return;
-    for (PIMAGE_IMPORT_DESCRIPTOR imp = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)h + rva); imp->Name; imp++) {
-        if (_stricmp((const char*)((BYTE*)h + imp->Name), "user32.dll") == 0) {
-            for (PIMAGE_THUNK_DATA t = (PIMAGE_THUNK_DATA)((BYTE*)h + imp->FirstThunk); t->u1.Function; t++) {
-                void** fp = (void**)&t->u1.Function;
-                DWORD old;
-                if (*fp == (void*)o_EDW || *fp == (void*)o_EDA) {
-                    VirtualProtect(fp, sizeof(void*), PAGE_READWRITE, &old);
-                    *fp = (*fp == (void*)o_EDW) ? (void*)H_EDW : (void*)H_EDA;
-                    VirtualProtect(fp, sizeof(void*), old, &old);
-                }
-            }
-        }
-    }
 }
 
 bool InitDXGI() {
@@ -183,9 +130,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT fl, REFIID r, void** p) {
 BOOL APIENTRY DllMain(HMODULE h, DWORD r, LPVOID lp) {
     if (r == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
-        HMODULE u = GetModuleHandleA("user32.dll");
-        if (u) { o_EDW = (PFN_EDW)GetProcAddress(u, "EnumDisplaySettingsW"); o_EDA = (PFN_EDA)GetProcAddress(u, "EnumDisplaySettingsA"); }
-        LoadIni(); PatchIAT(); InitDXGI();
+        LoadIni(); InitDXGI();
     }
     return TRUE;
 }
